@@ -8,7 +8,9 @@
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', sans-serif; background: #0f1419; color: #fff; height: 100vh; overflow: hidden; }
-        .container { display: grid; grid-template-columns: 1fr 300px; grid-template-rows: 60px 1fr; height: 100vh; }
+        .container { display: grid; grid-template-columns: 1fr 300px; grid-template-rows: 60px 1fr; height: 100vh; transition: grid-template-columns 0.3s ease; }
+        .container.fullscreen { grid-template-columns: 1fr 0; }
+        .container.fullscreen .sidebar { display: none; }
         header { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; background: #1a1f26; border-bottom: 1px solid #2f3942; }
         .logo { display: flex; align-items: center; gap: 12px; }
         .logo-icon { width: 40px; height: 40px; background: linear-gradient(135deg, #00d4ff, #00ff88); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 20px; }
@@ -19,6 +21,9 @@
         .radar-btn { padding: 8px 14px; border: none; background: transparent; color: #8899a6; font-size: 0.85rem; font-weight: 500; border-radius: 8px; cursor: pointer; transition: all 0.2s; }
         .radar-btn:hover { color: #fff; background: #242b33; }
         .radar-btn.active { background: #00d4ff; color: #000; }
+        .header-btn { padding: 8px 12px; border: 1px solid #2f3942; background: transparent; color: #8899a6; font-size: 0.85rem; border-radius: 8px; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; gap: 6px; }
+        .header-btn:hover { border-color: #00d4ff; color: #fff; }
+        .header-btn.active { background: #00d4ff; color: #000; border-color: #00d4ff; }
         .status { display: flex; align-items: center; gap: 8px; background: #0f1419; padding: 8px 14px; border-radius: 20px; }
         .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #00ff88; animation: pulse 2s infinite; }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
@@ -37,7 +42,7 @@
         .fps-display { display: flex; align-items: center; gap: 4px; color: #aaa; font-size: 13px; }
         .fps-icon { font-size: 16px; }
         .frame-counter { color: #888; font-size: 12px; margin-left: 4px; }
-        .sidebar { background: #1a1f26; padding: 16px; overflow-y: auto; border-left: 1px solid #2f3942; }
+        .sidebar { background: #1a1f26; padding: 16px; overflow-y: auto; border-left: 1px solid #2f3942; transition: all 0.3s ease; }
         .card { background: #0f1419; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
         .card-title { font-size: 0.75rem; color: #8899a6; text-transform: uppercase; margin-bottom: 12px; border-left: 3px solid #00d4ff; padding-left: 8px; }
         .info-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #2f3942; }
@@ -76,7 +81,7 @@
     </style>
 </head>
 <body>
-    <div class="container">
+    <div class="container" id="container">
         <header>
             <div class="logo">
                 <div class="logo-icon">🌧️</div>
@@ -88,6 +93,12 @@
                     <button class="radar-btn" data-radar="sumare">Sumaré</button>
                     <button class="radar-btn" data-radar="dcnit">DCNIT Niterói</button>
                 </div>
+                <button class="header-btn" id="mosaicBtn" onclick="window.location.href='mosaic.html'">
+                    <span>⊞</span> Mosaico
+                </button>
+                <button class="header-btn" id="fullscreenBtn">
+                    <span id="fullscreenIcon">⛶</span> <span id="fullscreenText">Expandir</span>
+                </button>
                 <div class="status"><div class="status-dot"></div><span id="statusText">Conectado</span></div>
             </div>
         </header>
@@ -113,7 +124,7 @@
                 </div>
             </div>
         </div>
-        <div class="sidebar">
+        <div class="sidebar" id="sidebar">
             <div class="card" id="radarInfoCard">
                 <div class="card-title" id="radarTitle">Radar Mendanha</div>
                 <div id="mendanhaInfo">
@@ -184,6 +195,17 @@
     <canvas id="analysisCanvas" style="display:none;"></canvas>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
+        // Fullscreen toggle
+        let isFullscreen = false;
+        document.getElementById('fullscreenBtn').onclick = function() {
+            isFullscreen = !isFullscreen;
+            document.getElementById('container').classList.toggle('fullscreen', isFullscreen);
+            document.getElementById('fullscreenIcon').textContent = isFullscreen ? '⊟' : '⛶';
+            document.getElementById('fullscreenText').textContent = isFullscreen ? 'Recolher' : 'Expandir';
+            this.classList.toggle('active', isFullscreen);
+            setTimeout(() => map.invalidateSize(), 350);
+        };
+
         // Configurações dos radares
         const RADAR_CONFIG = {
             mendanha: {

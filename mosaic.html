@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mosaico - Radar Nowcast</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', sans-serif; background: #0f1419; color: #fff; height: 100vh; overflow: hidden; }
+        
+        header { 
+            height: 50px; 
+            display: flex; 
+            align-items: center; 
+            justify-content: space-between; 
+            padding: 0 20px; 
+            background: #1a1f26; 
+            border-bottom: 1px solid #2f3942; 
+        }
+        .logo { display: flex; align-items: center; gap: 10px; }
+        .logo-icon { width: 32px; height: 32px; background: linear-gradient(135deg, #00d4ff, #00ff88); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; }
+        .logo h1 { font-size: 1rem; background: linear-gradient(90deg, #00d4ff, #00ff88); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .logo span { font-size: 0.65rem; color: #8899a6; }
+        
+        .header-controls { display: flex; align-items: center; gap: 10px; }
+        .header-btn { padding: 6px 12px; border: 1px solid #2f3942; background: transparent; color: #8899a6; font-size: 0.8rem; border-radius: 6px; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; gap: 6px; }
+        .header-btn:hover { border-color: #00d4ff; color: #fff; }
+        .header-btn.active { background: #00d4ff; color: #000; border-color: #00d4ff; }
+        
+        .layout-selector { display: flex; gap: 4px; background: #0f1419; padding: 4px; border-radius: 8px; }
+        .layout-btn { width: 36px; height: 28px; border: 1px solid #2f3942; background: #1a1f26; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.2s; }
+        .layout-btn:hover { border-color: #00d4ff; }
+        .layout-btn.active { background: #00d4ff; border-color: #00d4ff; }
+        .layout-btn svg { width: 20px; height: 16px; }
+        .layout-btn.active svg rect, .layout-btn.active svg path { fill: #000; }
+        .layout-btn svg rect, .layout-btn svg path { fill: #8899a6; }
+        
+        .mosaic-container { 
+            height: calc(100vh - 50px); 
+            display: grid; 
+            gap: 4px; 
+            padding: 4px; 
+            background: #0f1419;
+        }
+        
+        /* Layout 1: 3 colunas iguais */
+        .mosaic-container.layout-1 { grid-template-columns: 1fr 1fr 1fr; }
+        
+        /* Layout 2: 1 grande + 2 pequenos embaixo */
+        .mosaic-container.layout-2 { 
+            grid-template-columns: 1fr 1fr; 
+            grid-template-rows: 2fr 1fr; 
+        }
+        .mosaic-container.layout-2 .panel:first-child { grid-column: 1 / -1; }
+        
+        /* Layout 3: 2 em cima + 1 grande embaixo */
+        .mosaic-container.layout-3 { 
+            grid-template-columns: 1fr 1fr; 
+            grid-template-rows: 1fr 2fr; 
+        }
+        .mosaic-container.layout-3 .panel:nth-child(3) { grid-column: 1 / -1; }
+        
+        /* Layout 4: 1 grande esquerda + 2 pequenos direita */
+        .mosaic-container.layout-4 { 
+            grid-template-columns: 2fr 1fr; 
+            grid-template-rows: 1fr 1fr; 
+        }
+        .mosaic-container.layout-4 .panel:first-child { grid-row: 1 / -1; }
+        
+        .panel { 
+            background: #1a1f26; 
+            border-radius: 8px; 
+            overflow: hidden; 
+            position: relative;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .panel-header { 
+            height: 36px; 
+            background: #242b33; 
+            display: flex; 
+            align-items: center; 
+            justify-content: space-between;
+            padding: 0 12px;
+            border-bottom: 1px solid #2f3942;
+            cursor: move;
+        }
+        .panel-title { font-size: 0.85rem; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+        .panel-badge { padding: 2px 8px; background: #00d4ff; color: #000; border-radius: 4px; font-size: 0.7rem; font-weight: 600; }
+        .panel-controls { display: flex; gap: 4px; }
+        .panel-btn { width: 24px; height: 24px; border: none; background: transparent; color: #8899a6; cursor: pointer; border-radius: 4px; font-size: 12px; }
+        .panel-btn:hover { background: #2f3942; color: #fff; }
+        
+        .panel-content { flex: 1; position: relative; }
+        .panel-map { width: 100%; height: 100%; }
+        .panel-iframe { width: 100%; height: 100%; border: none; }
+        
+        .panel-player {
+            position: absolute;
+            bottom: 8px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: rgba(50, 55, 65, 0.95);
+            border-radius: 6px;
+            z-index: 1000;
+        }
+        .panel-player .ctrl-btn { 
+            width: 24px; height: 24px; border: none; background: transparent; 
+            color: #fff; cursor: pointer; font-size: 11px; border-radius: 4px; 
+        }
+        .panel-player .ctrl-btn:hover { background: rgba(255,255,255,0.1); }
+        .panel-player .time-display { font-size: 11px; color: #fff; min-width: 100px; text-align: center; }
+        .panel-player .frame-counter { font-size: 10px; color: #888; }
+        
+        .drag-over { outline: 2px dashed #00d4ff; outline-offset: -4px; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="logo">
+            <div class="logo-icon">🌧️</div>
+            <div><h1>Radar Nowcast</h1><span>Mosaico • COR Rio</span></div>
+        </div>
+        <div class="header-controls">
+            <div class="layout-selector">
+                <button class="layout-btn active" data-layout="1" title="3 colunas">
+                    <svg viewBox="0 0 24 18"><rect x="1" y="1" width="6" height="16" rx="1"/><rect x="9" y="1" width="6" height="16" rx="1"/><rect x="17" y="1" width="6" height="16" rx="1"/></svg>
+                </button>
+                <button class="layout-btn" data-layout="2" title="1 grande + 2 embaixo">
+                    <svg viewBox="0 0 24 18"><rect x="1" y="1" width="22" height="10" rx="1"/><rect x="1" y="13" width="10" height="4" rx="1"/><rect x="13" y="13" width="10" height="4" rx="1"/></svg>
+                </button>
+                <button class="layout-btn" data-layout="3" title="2 em cima + 1 grande">
+                    <svg viewBox="0 0 24 18"><rect x="1" y="1" width="10" height="4" rx="1"/><rect x="13" y="1" width="10" height="4" rx="1"/><rect x="1" y="7" width="22" height="10" rx="1"/></svg>
+                </button>
+                <button class="layout-btn" data-layout="4" title="1 grande esquerda + 2 direita">
+                    <svg viewBox="0 0 24 18"><rect x="1" y="1" width="14" height="16" rx="1"/><rect x="17" y="1" width="6" height="7" rx="1"/><rect x="17" y="10" width="6" height="7" rx="1"/></svg>
+                </button>
+            </div>
+            <button class="header-btn" onclick="window.location.href='index.html'">
+                <span>←</span> Voltar
+            </button>
+        </div>
+    </header>
+    
+    <div class="mosaic-container layout-1" id="mosaicContainer">
+        <div class="panel" data-radar="mendanha" draggable="true">
+            <div class="panel-header">
+                <div class="panel-title">
+                    <span class="panel-badge">Mendanha</span>
+                    <span style="font-size: 0.7rem; color: #8899a6;">INEA</span>
+                </div>
+                <div class="panel-controls">
+                    <button class="panel-btn" title="Arrastar">⋮⋮</button>
+                </div>
+            </div>
+            <div class="panel-content">
+                <div id="map-mendanha" class="panel-map"></div>
+                <div class="panel-player" id="player-mendanha">
+                    <button class="ctrl-btn" data-action="prev">⏪</button>
+                    <button class="ctrl-btn" data-action="play">⏸</button>
+                    <button class="ctrl-btn" data-action="next">⏩</button>
+                    <span class="time-display">Carregando...</span>
+                    <span class="frame-counter">0/0</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="panel" data-radar="sumare" draggable="true">
+            <div class="panel-header">
+                <div class="panel-title">
+                    <span class="panel-badge" style="background: #ff9900;">Sumaré</span>
+                    <span style="font-size: 0.7rem; color: #8899a6;">AlertaRio</span>
+                </div>
+                <div class="panel-controls">
+                    <button class="panel-btn" title="Arrastar">⋮⋮</button>
+                </div>
+            </div>
+            <div class="panel-content">
+                <div id="map-sumare" class="panel-map"></div>
+                <div class="panel-player" id="player-sumare">
+                    <button class="ctrl-btn" data-action="prev">⏪</button>
+                    <button class="ctrl-btn" data-action="play">⏸</button>
+                    <button class="ctrl-btn" data-action="next">⏩</button>
+                    <span class="time-display">Carregando...</span>
+                    <span class="frame-counter">0/0</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="panel" data-radar="dcnit" draggable="true">
+            <div class="panel-header">
+                <div class="panel-title">
+                    <span class="panel-badge" style="background: #00ff88;">DCNIT</span>
+                    <span style="font-size: 0.7rem; color: #8899a6;">Niterói</span>
+                </div>
+                <div class="panel-controls">
+                    <button class="panel-btn" title="Arrastar">⋮⋮</button>
+                </div>
+            </div>
+            <div class="panel-content">
+                <iframe class="panel-iframe" src="https://svidaniteroi.com.br/radar/"></iframe>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // Configurações dos radares
+        const RADAR_CONFIG = {
+            mendanha: {
+                bounds: [[-24.8, -46.5], [-20.8, -40.5]],
+                center: [-22.9, -43.5],
+                zoom: 8,
+                apiFrames: '/api/frames/mendanha',
+                apiFrame: '/api/frame/mendanha/'
+            },
+            sumare: {
+                bounds: [[-24.431567, -45.336972], [-21.478793, -41.159092]],
+                center: [-22.9332614, -43.4324536],
+                zoom: 9,
+                apiFrames: '/api/frames/sumare',
+                apiFrame: '/api/frame/sumare/'
+            }
+        };
+
+        // Estado dos radares
+        const radarState = {
+            mendanha: { map: null, overlay: null, frames: [], currentFrame: 0, isPlaying: false, interval: null },
+            sumare: { map: null, overlay: null, frames: [], currentFrame: 0, isPlaying: false, interval: null }
+        };
+
+        // Inicializar mapas
+        function initMaps() {
+            ['mendanha', 'sumare'].forEach(radar => {
+                const config = RADAR_CONFIG[radar];
+                const state = radarState[radar];
+                
+                state.map = L.map(`map-${radar}`, {
+                    center: config.center,
+                    zoom: config.zoom,
+                    zoomControl: false
+                });
+                
+                L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(state.map);
+                
+                loadFrames(radar);
+            });
+        }
+
+        // Carregar frames
+        async function loadFrames(radar) {
+            const config = RADAR_CONFIG[radar];
+            const state = radarState[radar];
+            
+            try {
+                const res = await fetch(config.apiFrames);
+                const data = await res.json();
+                state.frames = data.frames || [];
+                
+                if (state.frames.length > 0) {
+                    showFrame(radar, 0);
+                    startPlayback(radar);
+                }
+            } catch (e) {
+                console.error(`Erro ao carregar frames ${radar}:`, e);
+            }
+        }
+
+        // Mostrar frame
+        function showFrame(radar, index) {
+            const config = RADAR_CONFIG[radar];
+            const state = radarState[radar];
+            
+            if (state.frames.length === 0) return;
+            
+            state.currentFrame = index;
+            const filename = state.frames[index];
+            
+            if (state.overlay) state.map.removeLayer(state.overlay);
+            state.overlay = L.imageOverlay(
+                config.apiFrame + filename + '?t=' + Date.now(), 
+                config.bounds, 
+                { opacity: 0.7 }
+            ).addTo(state.map);
+            
+            // Atualizar player
+            const player = document.getElementById(`player-${radar}`);
+            const frameCounter = player.querySelector('.frame-counter');
+            const timeDisplay = player.querySelector('.time-display');
+            
+            frameCounter.textContent = `${index + 1}/${state.frames.length}`;
+            
+            if (radar === 'mendanha') {
+                const match = filename.match(/MDN-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})/);
+                if (match) {
+                    timeDisplay.textContent = `${match[3]}/${match[2]} ${match[4]}:${match[5]}`;
+                }
+            } else {
+                const now = new Date();
+                timeDisplay.textContent = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+            }
+        }
+
+        // Controles de playback
+        function startPlayback(radar) {
+            const state = radarState[radar];
+            if (state.isPlaying) return;
+            
+            state.isPlaying = true;
+            updatePlayButton(radar, true);
+            
+            state.interval = setInterval(() => {
+                state.currentFrame = (state.currentFrame + 1) % state.frames.length;
+                showFrame(radar, state.currentFrame);
+            }, 500);
+        }
+
+        function stopPlayback(radar) {
+            const state = radarState[radar];
+            if (!state.isPlaying) return;
+            
+            state.isPlaying = false;
+            updatePlayButton(radar, false);
+            clearInterval(state.interval);
+        }
+
+        function updatePlayButton(radar, isPlaying) {
+            const player = document.getElementById(`player-${radar}`);
+            const playBtn = player.querySelector('[data-action="play"]');
+            playBtn.textContent = isPlaying ? '⏸' : '▶';
+        }
+
+        // Event listeners para players
+        document.querySelectorAll('.panel-player').forEach(player => {
+            const radar = player.id.replace('player-', '');
+            
+            player.querySelectorAll('.ctrl-btn').forEach(btn => {
+                btn.onclick = () => {
+                    const action = btn.dataset.action;
+                    const state = radarState[radar];
+                    
+                    if (action === 'play') {
+                        if (state.isPlaying) stopPlayback(radar);
+                        else startPlayback(radar);
+                    } else if (action === 'prev') {
+                        stopPlayback(radar);
+                        state.currentFrame = (state.currentFrame - 1 + state.frames.length) % state.frames.length;
+                        showFrame(radar, state.currentFrame);
+                    } else if (action === 'next') {
+                        stopPlayback(radar);
+                        state.currentFrame = (state.currentFrame + 1) % state.frames.length;
+                        showFrame(radar, state.currentFrame);
+                    }
+                };
+            });
+        });
+
+        // Layout selector
+        document.querySelectorAll('.layout-btn').forEach(btn => {
+            btn.onclick = function() {
+                document.querySelectorAll('.layout-btn').forEach(b => b.classList.remove('active'));
+                this.classList.add('active');
+                
+                const container = document.getElementById('mosaicContainer');
+                container.className = `mosaic-container layout-${this.dataset.layout}`;
+                
+                // Invalidar tamanho dos mapas
+                setTimeout(() => {
+                    Object.values(radarState).forEach(state => {
+                        if (state.map) state.map.invalidateSize();
+                    });
+                }, 300);
+            };
+        });
+
+        // Drag and drop para reordenar painéis
+        let draggedPanel = null;
+
+        document.querySelectorAll('.panel').forEach(panel => {
+            panel.addEventListener('dragstart', (e) => {
+                draggedPanel = panel;
+                panel.style.opacity = '0.5';
+            });
+
+            panel.addEventListener('dragend', () => {
+                panel.style.opacity = '1';
+                document.querySelectorAll('.panel').forEach(p => p.classList.remove('drag-over'));
+            });
+
+            panel.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                if (panel !== draggedPanel) {
+                    panel.classList.add('drag-over');
+                }
+            });
+
+            panel.addEventListener('dragleave', () => {
+                panel.classList.remove('drag-over');
+            });
+
+            panel.addEventListener('drop', (e) => {
+                e.preventDefault();
+                panel.classList.remove('drag-over');
+                
+                if (draggedPanel && draggedPanel !== panel) {
+                    const container = document.getElementById('mosaicContainer');
+                    const panels = Array.from(container.children);
+                    const draggedIndex = panels.indexOf(draggedPanel);
+                    const targetIndex = panels.indexOf(panel);
+                    
+                    if (draggedIndex < targetIndex) {
+                        panel.parentNode.insertBefore(draggedPanel, panel.nextSibling);
+                    } else {
+                        panel.parentNode.insertBefore(draggedPanel, panel);
+                    }
+                    
+                    // Invalidar mapas após reordenação
+                    setTimeout(() => {
+                        Object.values(radarState).forEach(state => {
+                            if (state.map) state.map.invalidateSize();
+                        });
+                    }, 100);
+                }
+            });
+        });
+
+        // Inicializar
+        initMaps();
+
+        // Auto-refresh a cada 2 minutos
+        setInterval(() => {
+            loadFrames('mendanha');
+            loadFrames('sumare');
+        }, 120000);
+    </script>
+</body>
+</html>
