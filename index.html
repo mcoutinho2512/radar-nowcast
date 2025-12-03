@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Radar Nowcast - COR Rio</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', sans-serif; background: #0f1419; color: #fff; height: 100vh; overflow: hidden; }
+        .container { display: grid; grid-template-columns: 1fr 300px; grid-template-rows: 60px 1fr; height: 100vh; }
+        header { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; background: #1a1f26; border-bottom: 1px solid #2f3942; }
+        .logo { display: flex; align-items: center; gap: 12px; }
+        .logo-icon { width: 40px; height: 40px; background: linear-gradient(135deg, #00d4ff, #00ff88); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 20px; }
+        .logo h1 { font-size: 1.25rem; background: linear-gradient(90deg, #00d4ff, #00ff88); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .logo span { font-size: 0.7rem; color: #8899a6; }
+        .status { display: flex; align-items: center; gap: 8px; background: #0f1419; padding: 8px 14px; border-radius: 20px; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #00ff88; animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        #map { width: 100%; height: 100%; }
+        .controls { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 12px; padding: 12px 20px; background: rgba(26, 31, 38, 0.95); border-radius: 16px; border: 1px solid #2f3942; z-index: 1000; }
+        .btn { width: 40px; height: 40px; border: none; background: #0f1419; color: #fff; border-radius: 10px; cursor: pointer; font-size: 16px; }
+        .btn:hover { background: #00d4ff; color: #000; }
+        .btn.active { background: #00ff88; color: #000; }
+        .timeline { width: 200px; height: 6px; background: #0f1419; border-radius: 3px; cursor: pointer; }
+        .timeline-bar { height: 100%; background: linear-gradient(90deg, #00d4ff, #00ff88); border-radius: 3px; width: 0%; }
+        .time { font-family: monospace; color: #00d4ff; min-width: 140px; text-align: center; }
+        .sidebar { background: #1a1f26; padding: 16px; overflow-y: auto; border-left: 1px solid #2f3942; }
+        .card { background: #0f1419; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+        .card-title { font-size: 0.75rem; color: #8899a6; text-transform: uppercase; margin-bottom: 12px; border-left: 3px solid #00d4ff; padding-left: 8px; }
+        .info-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #2f3942; }
+        .info-row:last-child { border: none; }
+        .info-label { color: #8899a6; font-size: 0.85rem; }
+        .info-value { font-weight: 600; }
+        .legend { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .legend-item { display: flex; align-items: center; gap: 8px; font-size: 0.75rem; }
+        .legend-color { width: 20px; height: 12px; border-radius: 3px; }
+        .toggle-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; }
+        .toggle-label { font-size: 0.85rem; }
+        .toggle { position: relative; width: 44px; height: 24px; background: #2f3942; border-radius: 12px; cursor: pointer; transition: background 0.3s; }
+        .toggle.active { background: #00d4ff; }
+        .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; background: #fff; border-radius: 50%; transition: left 0.3s; }
+        .toggle.active::after { left: 22px; }
+        .nucleus-list { max-height: 150px; overflow-y: auto; }
+        .nucleus-item { display: flex; align-items: center; gap: 10px; padding: 8px; background: #1a1f26; border-radius: 8px; margin-bottom: 6px; }
+        .nucleus-icon { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; }
+        .nucleus-info { flex: 1; }
+        .nucleus-name { font-size: 0.85rem; font-weight: 600; }
+        .nucleus-dir { font-size: 0.7rem; color: #8899a6; }
+        .nucleus-speed { font-size: 0.9rem; font-weight: 600; color: #00d4ff; }
+        .arrow-marker { background: transparent !important; border: none !important; }
+        .map-selector { display: flex; flex-wrap: wrap; gap: 6px; }
+        .map-btn { padding: 6px 10px; border: 1px solid #2f3942; background: #1a1f26; color: #8899a6; border-radius: 6px; cursor: pointer; font-size: 0.75rem; transition: all 0.2s; }
+        .map-btn:hover { border-color: #00d4ff; color: #fff; }
+        .map-btn.active { background: #00d4ff; color: #000; border-color: #00d4ff; }
+        .loading { color: #00d4ff; font-size: 0.8rem; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <div class="logo-icon">🌧️</div>
+                <div><h1>Radar Nowcast</h1><span>Sistema de Tendência de Chuva • COR Rio</span></div>
+            </div>
+            <div class="status"><div class="status-dot"></div><span id="statusText">Conectado</span></div>
+        </header>
+        <div style="position: relative;">
+            <div id="map"></div>
+            <div class="controls">
+                <button class="btn" id="prevBtn">⏮</button>
+                <button class="btn" id="playBtn">▶</button>
+                <button class="btn" id="nextBtn">⏭</button>
+                <div class="timeline" id="timeline"><div class="timeline-bar" id="timelineBar"></div></div>
+                <div class="time" id="timeDisplay">Carregando...</div>
+            </div>
+        </div>
+        <div class="sidebar">
+            <div class="card">
+                <div class="card-title">Radar Mendanha</div>
+                <div class="info-row"><span class="info-label">Frames</span><span class="info-value" id="frameCount">0</span></div>
+                <div class="info-row"><span class="info-label">Atual</span><span class="info-value" id="currentFrameNum">0</span></div>
+                <div class="info-row"><span class="info-label">Núcleos</span><span class="info-value" id="nucleiCount">0</span></div>
+            </div>
+            <div class="card">
+                <div class="card-title">Tipo de Mapa</div>
+                <div class="map-selector">
+                    <button class="map-btn active" data-map="dark">Escuro</button>
+                    <button class="map-btn" data-map="light">Claro</button>
+                    <button class="map-btn" data-map="streets">Ruas</button>
+                    <button class="map-btn" data-map="satellite">Satélite</button>
+                    <button class="map-btn" data-map="topo">Topográfico</button>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-title">Configurações</div>
+                <div class="toggle-row"><span class="toggle-label">Marcador radar</span><div class="toggle" id="toggleMarker"></div></div>
+                <div class="toggle-row"><span class="toggle-label">Setas de direção</span><div class="toggle active" id="toggleArrows"></div></div>
+                <div class="toggle-row"><span class="toggle-label">Opacidade alta</span><div class="toggle" id="toggleOpacity"></div></div>
+            </div>
+            <div class="card">
+                <div class="card-title">Núcleos Detectados</div>
+                <div class="nucleus-list" id="nucleusList"><div class="loading">Analisando frames...</div></div>
+            </div>
+            <div class="card">
+                <div class="card-title">Legenda dBZ</div>
+                <div class="legend">
+                    <div class="legend-item"><div class="legend-color" style="background:#ff00ff"></div>Extremo</div>
+                    <div class="legend-item"><div class="legend-color" style="background:#ff0000"></div>Muito Forte</div>
+                    <div class="legend-item"><div class="legend-color" style="background:#ff9900"></div>Forte</div>
+                    <div class="legend-item"><div class="legend-color" style="background:#ffff00"></div>Moderado</div>
+                    <div class="legend-item"><div class="legend-color" style="background:#008800"></div>Leve</div>
+                    <div class="legend-item"><div class="legend-color" style="background:#00ff00"></div>Fraco</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <canvas id="analysisCanvas" style="display:none;"></canvas>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        const RADAR_BOUNDS = [[-24.8, -46.5], [-20.8, -40.5]];
+        const BOUNDS_HEIGHT = RADAR_BOUNDS[1][0] - RADAR_BOUNDS[0][0];
+        const BOUNDS_WIDTH = RADAR_BOUNDS[1][1] - RADAR_BOUNDS[0][1];
+        
+        const MAP_LAYERS = {
+            dark: L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { attribution: 'CartoDB' }),
+            light: L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { attribution: 'CartoDB' }),
+            streets: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: 'OpenStreetMap' }),
+            satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: 'Esri' }),
+            topo: L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { attribution: 'OpenTopoMap' })
+        };
+        
+        let map, imageOverlay, radarMarker, arrowsLayer, currentTileLayer;
+        let frames = [], currentFrame = 0, isPlaying = false, playInterval;
+        let currentOpacity = 0.7, showArrows = true;
+        let allFramesData = []; // Armazena dados de núcleos de todos os frames
+
+        function createArrowIcon(angle) {
+            const svg = `<svg width="44" height="44" viewBox="0 0 44 44" xmlns="http://www.w3.org/2000/svg">
+                <g transform="rotate(${angle}, 22, 22)">
+                    <line x1="22" y1="36" x2="22" y2="12" stroke="#000" stroke-width="6" stroke-linecap="round"/>
+                    <line x1="22" y1="36" x2="22" y2="12" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+                    <polygon points="22,6 13,18 31,18" fill="#000" stroke="#000" stroke-width="2"/>
+                    <polygon points="22,8 15,17 29,17" fill="#fff"/>
+                </g>
+            </svg>`;
+            return L.divIcon({
+                html: svg,
+                className: 'arrow-marker',
+                iconSize: [44, 44],
+                iconAnchor: [22, 22]
+            });
+        }
+
+        map = L.map('map').setView([-22.9, -43.5], 8);
+        currentTileLayer = MAP_LAYERS.dark;
+        currentTileLayer.addTo(map);
+        
+        radarMarker = L.marker([-22.8167, -43.5500]).bindPopup('Radar Mendanha');
+        arrowsLayer = L.layerGroup().addTo(map);
+
+        document.querySelectorAll('.map-btn').forEach(btn => {
+            btn.onclick = function() {
+                document.querySelectorAll('.map-btn').forEach(b => b.classList.remove('active'));
+                this.classList.add('active');
+                map.removeLayer(currentTileLayer);
+                currentTileLayer = MAP_LAYERS[this.dataset.map];
+                currentTileLayer.addTo(map);
+            };
+        });
+
+        document.getElementById('toggleMarker').onclick = function() {
+            this.classList.toggle('active');
+            this.classList.contains('active') ? radarMarker.addTo(map) : map.removeLayer(radarMarker);
+        };
+
+        document.getElementById('toggleArrows').onclick = function() {
+            this.classList.toggle('active');
+            showArrows = this.classList.contains('active');
+            showArrows ? drawArrowsForFrame(currentFrame) : arrowsLayer.clearLayers();
+        };
+
+        document.getElementById('toggleOpacity').onclick = function() {
+            this.classList.toggle('active');
+            currentOpacity = this.classList.contains('active') ? 0.9 : 0.7;
+            if (imageOverlay) imageOverlay.setOpacity(currentOpacity);
+        };
+
+        function detectNuclei(imageData, width, height) {
+            const data = imageData.data;
+            const visited = new Set();
+            const nuclei = [];
+
+            function isRainPixel(r, g, b, a) {
+                if (a < 100) return false;
+                if (g > 200 && r < 100 && b < 100) return { intensity: 1 };
+                if (g > 100 && g < 200 && r < 100 && b < 100) return { intensity: 2 };
+                if (r > 200 && g > 200 && b < 100) return { intensity: 3 };
+                if (r > 200 && g > 100 && g < 200 && b < 100) return { intensity: 4 };
+                if (r > 200 && g < 100 && b < 100) return { intensity: 5 };
+                if (r > 200 && b > 200 && g < 100) return { intensity: 6 };
+                if (b > 150 && g > 150 && r < 100) return { intensity: 2 };
+                return false;
+            }
+
+            function floodFill(startX, startY) {
+                const cluster = [];
+                const stack = [[startX, startY]];
+                let totalIntensity = 0;
+                while (stack.length > 0) {
+                    const [x, y] = stack.pop();
+                    const key = `${x},${y}`;
+                    if (visited.has(key) || x < 0 || x >= width || y < 0 || y >= height) continue;
+                    const idx = (y * width + x) * 4;
+                    const pixel = isRainPixel(data[idx], data[idx+1], data[idx+2], data[idx+3]);
+                    if (!pixel) continue;
+                    visited.add(key);
+                    cluster.push({x, y});
+                    totalIntensity += pixel.intensity;
+                    stack.push([x+1, y], [x-1, y], [x, y+1], [x, y-1]);
+                }
+                return { cluster, avgIntensity: cluster.length > 0 ? totalIntensity / cluster.length : 0 };
+            }
+
+            for (let y = 0; y < height; y += 4) {
+                for (let x = 0; x < width; x += 4) {
+                    const key = `${x},${y}`;
+                    if (visited.has(key)) continue;
+                    const idx = (y * width + x) * 4;
+                    if (isRainPixel(data[idx], data[idx+1], data[idx+2], data[idx+3])) {
+                        const { cluster, avgIntensity } = floodFill(x, y);
+                        if (cluster.length >= 80) {
+                            let sumX = 0, sumY = 0;
+                            cluster.forEach(p => { sumX += p.x; sumY += p.y; });
+                            nuclei.push({ x: sumX / cluster.length, y: sumY / cluster.length, size: cluster.length, intensity: avgIntensity });
+                        }
+                    }
+                }
+            }
+            return nuclei;
+        }
+
+        function pixelToLatLng(x, y, imgWidth, imgHeight) {
+            const lat = RADAR_BOUNDS[1][0] - (y / imgHeight) * Math.abs(BOUNDS_HEIGHT);
+            const lng = RADAR_BOUNDS[0][1] + (x / imgWidth) * BOUNDS_WIDTH;
+            return [lat, lng];
+        }
+
+        function getCardinalDirection(angle) {
+            const directions = ['E', 'NE', 'N', 'NW', 'W', 'SW', 'S', 'SE'];
+            const idx = Math.round(((angle + 180 + 22.5) % 360) / 45) % 8;
+            return directions[idx];
+        }
+
+        // Analisar TODOS os frames
+        async function analyzeAllFrames() {
+            if (frames.length < 2) return;
+            
+            const canvas = document.getElementById('analysisCanvas');
+            const ctx = canvas.getContext('2d');
+            allFramesData = [];
+            
+            document.getElementById('nucleusList').innerHTML = '<div class="loading">Analisando frames... 0/' + frames.length + '</div>';
+
+            for (let i = 0; i < frames.length; i++) {
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+                
+                await new Promise((resolve) => {
+                    img.onload = () => {
+                        canvas.width = img.width;
+                        canvas.height = img.height;
+                        ctx.drawImage(img, 0, 0);
+                        try {
+                            const imageData = ctx.getImageData(0, 0, img.width, img.height);
+                            const nuclei = detectNuclei(imageData, img.width, img.height);
+                            allFramesData.push({ frame: i, nuclei, width: img.width, height: img.height });
+                        } catch(e) { 
+                            allFramesData.push({ frame: i, nuclei: [], width: 1024, height: 1024 });
+                        }
+                        document.getElementById('nucleusList').innerHTML = '<div class="loading">Analisando frames... ' + (i+1) + '/' + frames.length + '</div>';
+                        resolve();
+                    };
+                    img.onerror = () => {
+                        allFramesData.push({ frame: i, nuclei: [], width: 1024, height: 1024 });
+                        resolve();
+                    };
+                    img.src = '/api/frame/mendanha/' + frames[i];
+                });
+            }
+            
+            // Calcular movimentos entre frames consecutivos
+            calculateMovements();
+            drawArrowsForFrame(currentFrame);
+        }
+
+        // Calcular movimento de cada núcleo entre frames
+        function calculateMovements() {
+            for (let i = 0; i < allFramesData.length - 1; i++) {
+                const current = allFramesData[i];
+                const next = allFramesData[i + 1];
+                
+                current.movements = [];
+                
+                current.nuclei.forEach(nucleus => {
+                    let bestMatch = null, bestDist = Infinity;
+                    
+                    next.nuclei.forEach(nextNucleus => {
+                        const dist = Math.hypot(nucleus.x - nextNucleus.x, nucleus.y - nextNucleus.y);
+                        if (dist < bestDist && dist < 150) {
+                            bestDist = dist;
+                            bestMatch = nextNucleus;
+                        }
+                    });
+                    
+                    if (bestMatch) {
+                        const dx = bestMatch.x - nucleus.x;
+                        const dy = bestMatch.y - nucleus.y;
+                        const speed = Math.hypot(dx, dy);
+                        const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+                        
+                        if (speed > 2) {
+                            current.movements.push({
+                                x: nucleus.x,
+                                y: nucleus.y,
+                                dx, dy, speed, angle,
+                                intensity: nucleus.intensity,
+                                size: nucleus.size
+                            });
+                        }
+                    }
+                });
+            }
+        }
+
+        // Desenhar setas para um frame específico
+        function drawArrowsForFrame(frameIndex) {
+            arrowsLayer.clearLayers();
+            if (!showArrows || allFramesData.length === 0) return;
+            
+            const frameData = allFramesData[frameIndex];
+            if (!frameData || !frameData.movements) return;
+            
+            const movements = frameData.movements;
+            const intensityColors = ['#00ff00', '#008800', '#ffff00', '#ff9900', '#ff0000', '#ff00ff'];
+            const intensityNames = ['Fraco', 'Leve', 'Moderado', 'Forte', 'Muito Forte', 'Extremo'];
+            
+            document.getElementById('nucleiCount').textContent = movements.length;
+            const listEl = document.getElementById('nucleusList');
+            listEl.innerHTML = '';
+
+            movements.forEach((m, i) => {
+                const latlng = pixelToLatLng(m.x, m.y, frameData.width, frameData.height);
+                const intIdx = Math.min(Math.floor(m.intensity) - 1, 5);
+                const color = intensityColors[Math.max(0, intIdx)];
+                const name = intensityNames[Math.max(0, intIdx)];
+                const svgAngle = m.angle + 90;
+
+                const arrowIcon = createArrowIcon(svgAngle);
+                L.marker(latlng, { icon: arrowIcon }).addTo(arrowsLayer);
+
+                const speedKmh = Math.round(m.speed * 2.5);
+                const dir = getCardinalDirection(m.angle);
+
+                listEl.innerHTML += `<div class="nucleus-item">
+                    <div class="nucleus-icon" style="background:${color}">☁️</div>
+                    <div class="nucleus-info">
+                        <div class="nucleus-name">Núcleo ${i + 1} - ${name}</div>
+                        <div class="nucleus-dir">→ ${dir}</div>
+                    </div>
+                    <div class="nucleus-speed">~${speedKmh} km/h</div>
+                </div>`;
+            });
+
+            if (movements.length === 0) {
+                listEl.innerHTML = '<div style="color: #8899a6; font-size: 0.8rem;">Nenhum núcleo em movimento</div>';
+            }
+        }
+
+        async function loadFrames() {
+            try {
+                const res = await fetch('/api/frames/mendanha');
+                const data = await res.json();
+                const newFrames = data.frames || [];
+                
+                // Só re-analisa se os frames mudaram
+                if (JSON.stringify(newFrames) !== JSON.stringify(frames)) {
+                    frames = newFrames;
+                    document.getElementById('frameCount').textContent = frames.length;
+                    if (frames.length > 0) {
+                        showFrame(0);
+                        analyzeAllFrames();
+                    }
+                }
+            } catch (e) { console.error('Erro:', e); }
+        }
+
+        function showFrame(index) {
+            if (frames.length === 0) return;
+            currentFrame = index;
+            const filename = frames[index];
+            if (imageOverlay) map.removeLayer(imageOverlay);
+            imageOverlay = L.imageOverlay('/api/frame/mendanha/' + filename, RADAR_BOUNDS, { opacity: currentOpacity }).addTo(map);
+            document.getElementById('currentFrameNum').textContent = (index + 1) + '/' + frames.length;
+            document.getElementById('timelineBar').style.width = ((index + 1) / frames.length * 100) + '%';
+            const match = filename.match(/MDN-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})/);
+            if (match) document.getElementById('timeDisplay').textContent = match[3] + '/' + match[2] + '/' + match[1] + ' ' + match[4] + ':' + match[5];
+            
+            // Atualizar setas para este frame
+            drawArrowsForFrame(index);
+        }
+
+        document.getElementById('playBtn').onclick = function() {
+            isPlaying = !isPlaying;
+            this.textContent = isPlaying ? '⏸' : '▶';
+            this.classList.toggle('active', isPlaying);
+            if (isPlaying) {
+                playInterval = setInterval(() => {
+                    currentFrame = (currentFrame + 1) % frames.length;
+                    showFrame(currentFrame);
+                }, 500);
+            } else {
+                clearInterval(playInterval);
+            }
+        };
+
+        document.getElementById('prevBtn').onclick = () => { currentFrame = (currentFrame - 1 + frames.length) % frames.length; showFrame(currentFrame); };
+        document.getElementById('nextBtn').onclick = () => { currentFrame = (currentFrame + 1) % frames.length; showFrame(currentFrame); };
+        document.getElementById('timeline').onclick = function(e) { currentFrame = Math.floor((e.offsetX / this.offsetWidth) * frames.length); showFrame(currentFrame); };
+
+        loadFrames();
+        setInterval(loadFrames, 120000);
+    </script>
+</body>
+</html>
