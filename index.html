@@ -69,6 +69,10 @@
         .external-info { color: #8899a6; font-size: 0.85rem; line-height: 1.5; }
         .external-link { color: #00d4ff; text-decoration: none; }
         .external-link:hover { text-decoration: underline; }
+        .download-btn { width: 100%; padding: 12px; border: none; background: linear-gradient(135deg, #00d4ff, #00ff88); color: #000; font-weight: 600; font-size: 0.9rem; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; transition: transform 0.2s, box-shadow 0.2s; }
+        .download-btn:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0, 212, 255, 0.3); }
+        .download-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+        .download-btn .icon { font-size: 1.1rem; }
     </style>
 </head>
 <body>
@@ -120,8 +124,8 @@
                 </div>
                 <div id="sumareInfo" style="display:none;">
                     <div class="info-row"><span class="info-label">Fonte</span><span class="info-value">AlertaRio</span></div>
-                    <div class="info-row"><span class="info-label">Frames</span><span class="info-value">20</span></div>
-                    <div class="info-row"><span class="info-label">Atual</span><span class="info-value" id="sumareFrameNum">0/20</span></div>
+                    <div class="info-row"><span class="info-label">Frames</span><span class="info-value" id="sumareFrameCount">0</span></div>
+                    <div class="info-row"><span class="info-label">Atual</span><span class="info-value" id="sumareFrameNum">0</span></div>
                     <div class="info-row"><span class="info-label">Núcleos</span><span class="info-value" id="sumareNucleiCount">0</span></div>
                 </div>
                 <div id="dcnitInfo" style="display:none;">
@@ -132,6 +136,18 @@
                     </p>
                 </div>
             </div>
+            
+            <div class="card" id="exportCard">
+                <div class="card-title">Exportar Animação</div>
+                <button class="download-btn" id="downloadGif">
+                    <span class="icon">📥</span>
+                    <span>Baixar GIF Animado</span>
+                </button>
+                <p style="color: #8899a6; font-size: 0.75rem; margin-top: 10px; text-align: center;">
+                    Gera animação com todos os frames disponíveis
+                </p>
+            </div>
+            
             <div class="card" id="mapCard">
                 <div class="card-title">Tipo de Mapa</div>
                 <div class="map-selector">
@@ -175,7 +191,9 @@
                 center: [-22.9, -43.5],
                 zoom: 8,
                 markerPos: [-22.8167, -43.5500],
-                markerName: 'Radar Mendanha'
+                markerName: 'Radar Mendanha',
+                apiFrames: '/api/frames/mendanha',
+                apiFrame: '/api/frame/mendanha/'
             },
             sumare: {
                 bounds: [[-24.431567, -45.336972], [-21.478793, -41.159092]],
@@ -183,8 +201,8 @@
                 zoom: 9,
                 markerPos: [-22.9596, -43.2807],
                 markerName: 'Radar Sumaré',
-                framesUrl: 'https://alertario.rio.rj.gov.br/upload/Mapa/semfundo/radar',
-                totalFrames: 20
+                apiFrames: '/api/frames/sumare',
+                apiFrame: '/api/frame/sumare/'
             }
         };
         
@@ -199,15 +217,8 @@
         let map, imageOverlay, radarMarker, arrowsLayer, currentTileLayer;
         let frames = [], currentFrame = 0, isPlaying = false, playInterval;
         let currentOpacity = 0.7, showArrows = true;
-        let allFramesData = [];
-        let sumareFramesData = [];
+        let allFramesData = { mendanha: [], sumare: [] };
         let currentRadar = 'mendanha';
-        let sumareFrames = [];
-
-        // Gerar URLs dos frames do Sumaré
-        for (let i = 1; i <= 20; i++) {
-            sumareFrames.push(RADAR_CONFIG.sumare.framesUrl + String(i).padStart(3, '0') + '.png');
-        }
 
         function createArrowIcon(angle) {
             const svg = `<svg width="44" height="44" viewBox="0 0 44 44" xmlns="http://www.w3.org/2000/svg">
@@ -233,6 +244,44 @@
         radarMarker = L.marker(RADAR_CONFIG.mendanha.markerPos).bindPopup(RADAR_CONFIG.mendanha.markerName);
         arrowsLayer = L.layerGroup().addTo(map);
 
+        // Download GIF
+        document.getElementById('downloadGif').onclick = async function() {
+            const btn = this;
+            const originalText = btn.innerHTML;
+            
+            btn.disabled = true;
+            btn.innerHTML = '<span class="icon">⏳</span><span>Gerando GIF...</span>';
+            
+            try {
+                const response = await fetch(`/api/export/gif/${currentRadar}`);
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || 'Erro ao gerar GIF');
+                }
+                
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `radar_${currentRadar}_${new Date().toISOString().slice(0,19).replace(/[:-]/g,'')}.gif`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+                
+                btn.innerHTML = '<span class="icon">✅</span><span>Download Concluído!</span>';
+                setTimeout(() => {
+                    btn.innerHTML = originalText;
+                    btn.disabled = false;
+                }, 2000);
+            } catch (error) {
+                alert('Erro: ' + error.message);
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        };
+
         // Seletor de radar
         document.querySelectorAll('.radar-btn').forEach(btn => {
             btn.onclick = function() {
@@ -256,6 +305,7 @@
                     document.getElementById('mapCard').style.display = 'none';
                     document.getElementById('configCard').style.display = 'none';
                     document.getElementById('nucleiCard').style.display = 'none';
+                    document.getElementById('exportCard').style.display = 'none';
                 } else {
                     document.getElementById('map').style.display = 'block';
                     document.getElementById('externalRadar').style.display = 'none';
@@ -264,6 +314,7 @@
                     document.getElementById('mapCard').style.display = 'block';
                     document.getElementById('configCard').style.display = 'block';
                     document.getElementById('nucleiCard').style.display = 'block';
+                    document.getElementById('exportCard').style.display = 'block';
                     
                     const config = RADAR_CONFIG[currentRadar];
                     map.setView(config.center, config.zoom);
@@ -276,13 +327,13 @@
                         document.getElementById('mendanhaInfo').style.display = 'block';
                         document.getElementById('sumareInfo').style.display = 'none';
                         document.getElementById('dcnitInfo').style.display = 'none';
-                        loadMendanhaFrames();
+                        loadFrames('mendanha');
                     } else if (currentRadar === 'sumare') {
                         document.getElementById('radarTitle').textContent = 'Radar Sumaré';
                         document.getElementById('mendanhaInfo').style.display = 'none';
                         document.getElementById('sumareInfo').style.display = 'block';
                         document.getElementById('dcnitInfo').style.display = 'none';
-                        loadSumareFrames();
+                        loadFrames('sumare');
                     }
                     
                     map.invalidateSize();
@@ -309,8 +360,7 @@
             this.classList.toggle('active');
             showArrows = this.classList.contains('active');
             if (showArrows) {
-                if (currentRadar === 'mendanha') drawArrowsForFrame(currentFrame, allFramesData, RADAR_CONFIG.mendanha.bounds);
-                else if (currentRadar === 'sumare') drawArrowsForFrame(currentFrame, sumareFramesData, RADAR_CONFIG.sumare.bounds);
+                drawArrowsForFrame(currentFrame);
             } else {
                 arrowsLayer.clearLayers();
             }
@@ -390,13 +440,19 @@
             return directions[idx];
         }
 
-        // Análise genérica de frames
-        async function analyzeFrames(framesList, getFrameUrl, targetArray, progressCallback) {
+        async function analyzeFrames(radar) {
+            const config = RADAR_CONFIG[radar];
+            const framesData = allFramesData[radar];
+            
+            if (frames.length < 2) return;
+            
             const canvas = document.getElementById('analysisCanvas');
             const ctx = canvas.getContext('2d');
-            targetArray.length = 0;
+            framesData.length = 0;
 
-            for (let i = 0; i < framesList.length; i++) {
+            document.getElementById('nucleusList').innerHTML = '<div class="loading">Analisando frames... 0/' + frames.length + '</div>';
+
+            for (let i = 0; i < frames.length; i++) {
                 const img = new Image();
                 img.crossOrigin = 'anonymous';
                 
@@ -408,26 +464,29 @@
                         try {
                             const imageData = ctx.getImageData(0, 0, img.width, img.height);
                             const nuclei = detectNuclei(imageData, img.width, img.height);
-                            targetArray.push({ frame: i, nuclei, width: img.width, height: img.height });
+                            framesData.push({ frame: i, nuclei, width: img.width, height: img.height });
                         } catch(e) { 
-                            targetArray.push({ frame: i, nuclei: [], width: 1024, height: 1024 });
+                            console.error('Canvas error:', e);
+                            framesData.push({ frame: i, nuclei: [], width: 1024, height: 1024 });
                         }
-                        if (progressCallback) progressCallback(i + 1, framesList.length);
+                        document.getElementById('nucleusList').innerHTML = '<div class="loading">Analisando frames... ' + (i+1) + '/' + frames.length + '</div>';
                         resolve();
                     };
                     img.onerror = () => {
-                        targetArray.push({ frame: i, nuclei: [], width: 1024, height: 1024 });
-                        if (progressCallback) progressCallback(i + 1, framesList.length);
+                        framesData.push({ frame: i, nuclei: [], width: 1024, height: 1024 });
                         resolve();
                     };
-                    img.src = getFrameUrl(framesList[i], i);
+                    img.src = config.apiFrame + frames[i] + '?t=' + Date.now();
                 });
             }
             
-            calculateMovementsForArray(targetArray);
+            calculateMovements(radar);
+            drawArrowsForFrame(currentFrame);
         }
 
-        function calculateMovementsForArray(framesData) {
+        function calculateMovements(radar) {
+            const framesData = allFramesData[radar];
+            
             for (let i = 0; i < framesData.length - 1; i++) {
                 const current = framesData[i];
                 const next = framesData[i + 1];
@@ -465,9 +524,13 @@
             }
         }
 
-        function drawArrowsForFrame(frameIndex, framesData, bounds) {
+        function drawArrowsForFrame(frameIndex) {
             arrowsLayer.clearLayers();
-            if (!showArrows || framesData.length === 0) return;
+            
+            const framesData = allFramesData[currentRadar];
+            const config = RADAR_CONFIG[currentRadar];
+            
+            if (!showArrows || !framesData || framesData.length === 0) return;
             
             const frameData = framesData[frameIndex];
             if (!frameData || !frameData.movements) return;
@@ -476,7 +539,6 @@
             const intensityColors = ['#00ff00', '#008800', '#ffff00', '#ff9900', '#ff0000', '#ff00ff'];
             const intensityNames = ['Fraco', 'Leve', 'Moderado', 'Forte', 'Muito Forte', 'Extremo'];
             
-            // Atualizar contador de núcleos
             if (currentRadar === 'mendanha') {
                 document.getElementById('nucleiCount').textContent = movements.length;
             } else if (currentRadar === 'sumare') {
@@ -487,7 +549,7 @@
             listEl.innerHTML = '';
 
             movements.forEach((m, i) => {
-                const latlng = pixelToLatLng(m.x, m.y, frameData.width, frameData.height, bounds);
+                const latlng = pixelToLatLng(m.x, m.y, frameData.width, frameData.height, config.bounds);
                 const intIdx = Math.min(Math.floor(m.intensity) - 1, 5);
                 const color = intensityColors[Math.max(0, intIdx)];
                 const name = intensityNames[Math.max(0, intIdx)];
@@ -514,104 +576,59 @@
             }
         }
 
-        // Carregar frames do Mendanha
-        async function loadMendanhaFrames() {
+        async function loadFrames(radar) {
+            const config = RADAR_CONFIG[radar];
+            
             try {
-                const res = await fetch('/api/frames/mendanha');
+                const res = await fetch(config.apiFrames);
                 const data = await res.json();
                 frames = data.frames || [];
-                document.getElementById('frameCount').textContent = frames.length;
+                
+                if (radar === 'mendanha') {
+                    document.getElementById('frameCount').textContent = frames.length;
+                } else {
+                    document.getElementById('sumareFrameCount').textContent = frames.length;
+                }
+                
                 currentFrame = 0;
                 
                 if (frames.length > 0) {
-                    showMendanhaFrame(0);
-                    
-                    document.getElementById('nucleusList').innerHTML = '<div class="loading">Analisando frames... 0/' + frames.length + '</div>';
-                    
-                    await analyzeFrames(
-                        frames,
-                        (frame) => '/api/frame/mendanha/' + frame,
-                        allFramesData,
-                        (current, total) => {
-                            document.getElementById('nucleusList').innerHTML = '<div class="loading">Analisando frames... ' + current + '/' + total + '</div>';
-                        }
-                    );
-                    
-                    drawArrowsForFrame(currentFrame, allFramesData, RADAR_CONFIG.mendanha.bounds);
+                    showFrame(0);
+                    await analyzeFrames(radar);
                     startPlayback();
                 }
-            } catch (e) { console.error('Erro:', e); }
-        }
-
-        // Carregar frames do Sumaré
-        async function loadSumareFrames() {
-            frames = sumareFrames;
-            currentFrame = 0;
-            showSumareFrame(0);
-            
-            document.getElementById('nucleusList').innerHTML = '<div class="loading">Analisando frames... 0/20</div>';
-            
-            await analyzeFrames(
-                sumareFrames,
-                (frame) => frame + '?t=' + Date.now(),
-                sumareFramesData,
-                (current, total) => {
-                    document.getElementById('nucleusList').innerHTML = '<div class="loading">Analisando frames... ' + current + '/' + total + '</div>';
-                }
-            );
-            
-            drawArrowsForFrame(currentFrame, sumareFramesData, RADAR_CONFIG.sumare.bounds);
-            startPlayback();
-        }
-
-        function showMendanhaFrame(index) {
-            if (frames.length === 0) return;
-            currentFrame = index;
-            const filename = frames[index];
-            const bounds = RADAR_CONFIG.mendanha.bounds;
-            
-            if (imageOverlay) map.removeLayer(imageOverlay);
-            imageOverlay = L.imageOverlay('/api/frame/mendanha/' + filename, bounds, { opacity: currentOpacity }).addTo(map);
-            
-            document.getElementById('currentFrameNum').textContent = (index + 1) + '/' + frames.length;
-            document.getElementById('frameCounter').textContent = (index + 1) + '/' + frames.length;
-            document.getElementById('timelineBar').style.width = ((index + 1) / frames.length * 100) + '%';
-            
-            const match = filename.match(/MDN-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})/);
-            if (match) {
-                const timeStr = match[3] + '/' + match[2] + '/' + match[1] + ', ' + match[4] + ':' + match[5] + ':00';
-                document.getElementById('timeDisplay').textContent = timeStr;
+            } catch (e) { 
+                console.error('Erro ao carregar frames:', e); 
             }
-            
-            drawArrowsForFrame(index, allFramesData, bounds);
-        }
-
-        function showSumareFrame(index) {
-            if (sumareFrames.length === 0) return;
-            currentFrame = index;
-            const url = sumareFrames[index] + '?t=' + Date.now();
-            const bounds = RADAR_CONFIG.sumare.bounds;
-            
-            if (imageOverlay) map.removeLayer(imageOverlay);
-            imageOverlay = L.imageOverlay(url, bounds, { opacity: currentOpacity }).addTo(map);
-            
-            document.getElementById('sumareFrameNum').textContent = (index + 1) + '/20';
-            document.getElementById('frameCounter').textContent = (index + 1) + '/20';
-            document.getElementById('timelineBar').style.width = ((index + 1) / 20 * 100) + '%';
-            
-            const now = new Date();
-            const timeStr = now.toLocaleDateString('pt-BR') + ', ' + now.toLocaleTimeString('pt-BR');
-            document.getElementById('timeDisplay').textContent = timeStr;
-            
-            drawArrowsForFrame(index, sumareFramesData, bounds);
         }
 
         function showFrame(index) {
+            if (frames.length === 0) return;
+            currentFrame = index;
+            
+            const config = RADAR_CONFIG[currentRadar];
+            const filename = frames[index];
+            
+            if (imageOverlay) map.removeLayer(imageOverlay);
+            imageOverlay = L.imageOverlay(config.apiFrame + filename + '?t=' + Date.now(), config.bounds, { opacity: currentOpacity }).addTo(map);
+            
+            const frameNum = (index + 1) + '/' + frames.length;
+            document.getElementById('frameCounter').textContent = frameNum;
+            document.getElementById('timelineBar').style.width = ((index + 1) / frames.length * 100) + '%';
+            
             if (currentRadar === 'mendanha') {
-                showMendanhaFrame(index);
+                document.getElementById('currentFrameNum').textContent = frameNum;
+                const match = filename.match(/MDN-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})/);
+                if (match) {
+                    document.getElementById('timeDisplay').textContent = match[3] + '/' + match[2] + '/' + match[1] + ', ' + match[4] + ':' + match[5] + ':00';
+                }
             } else if (currentRadar === 'sumare') {
-                showSumareFrame(index);
+                document.getElementById('sumareFrameNum').textContent = frameNum;
+                const now = new Date();
+                document.getElementById('timeDisplay').textContent = now.toLocaleDateString('pt-BR') + ', ' + now.toLocaleTimeString('pt-BR');
             }
+            
+            drawArrowsForFrame(index);
         }
 
         function startPlayback() {
@@ -620,8 +637,7 @@
             document.getElementById('playBtn').textContent = '⏸';
             document.getElementById('playBtn').classList.add('playing');
             playInterval = setInterval(() => {
-                const maxFrames = currentRadar === 'sumare' ? 20 : frames.length;
-                currentFrame = (currentFrame + 1) % maxFrames;
+                currentFrame = (currentFrame + 1) % frames.length;
                 showFrame(currentFrame);
             }, 500);
         }
@@ -635,37 +651,35 @@
         }
 
         document.getElementById('playBtn').onclick = function() {
-            if (isPlaying) {
-                stopPlayback();
-            } else {
-                startPlayback();
-            }
+            if (isPlaying) stopPlayback();
+            else startPlayback();
         };
 
         document.getElementById('prevBtn').onclick = () => { 
             stopPlayback();
-            const maxFrames = currentRadar === 'sumare' ? 20 : frames.length;
-            currentFrame = (currentFrame - 1 + maxFrames) % maxFrames; 
+            currentFrame = (currentFrame - 1 + frames.length) % frames.length; 
             showFrame(currentFrame); 
         };
         
         document.getElementById('nextBtn').onclick = () => { 
             stopPlayback();
-            const maxFrames = currentRadar === 'sumare' ? 20 : frames.length;
-            currentFrame = (currentFrame + 1) % maxFrames; 
+            currentFrame = (currentFrame + 1) % frames.length; 
             showFrame(currentFrame); 
         };
         
         document.getElementById('timeline').onclick = function(e) { 
-            const maxFrames = currentRadar === 'sumare' ? 20 : frames.length;
-            currentFrame = Math.floor((e.offsetX / this.offsetWidth) * maxFrames); 
+            currentFrame = Math.floor((e.offsetX / this.offsetWidth) * frames.length); 
             showFrame(currentFrame); 
         };
 
         // Iniciar com Mendanha
-        loadMendanhaFrames();
+        loadFrames('mendanha');
+        
+        // Auto-refresh a cada 2 minutos
         setInterval(() => {
-            if (currentRadar === 'mendanha') loadMendanhaFrames();
+            if (currentRadar === 'mendanha' || currentRadar === 'sumare') {
+                loadFrames(currentRadar);
+            }
         }, 120000);
     </script>
 </body>
