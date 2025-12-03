@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, send_file, Response
+from flask import Flask, jsonify, send_file, Response, request
 from flask_cors import CORS
 import os
 import re
@@ -8,34 +8,144 @@ import time
 from datetime import datetime, timedelta
 import requests
 from io import BytesIO
+from functools import wraps
 
 app = Flask(__name__)
-CORS(app)
 
-# Configuração
+# ============================================
+# CONFIGURAÇÃO DE SEGURANÇA
+# ============================================
+
+# CORS restrito - apenas domínios permitidos
+ALLOWED_ORIGINS = [
+    'http://35.225.221.88',
+    'https://35.225.221.88',
+    'http://dashboardradar.cor.rio',
+    'https://dashboardradar.cor.rio',
+    'http://localhost:5000',
+    'http://127.0.0.1:5000'
+]
+CORS(app, origins=ALLOWED_ORIGINS)
+
+# Token para endpoints administrativos (gere um novo com: python -c "import secrets; print(secrets.token_hex(32))")
+ADMIN_TOKEN = os.environ.get('ADMIN_TOKEN', 'cor_rio_radar_2024_token_seguro')
+
+# Rate limiting simples (em memória)
+rate_limit_store = {}
+RATE_LIMIT_WINDOW = 60  # segundos
+RATE_LIMIT_MAX_REQUESTS = {
+    'gif': 5,      # 5 GIFs por minuto
+    'sync': 2,     # 2 syncs por minuto
+    'default': 100 # 100 requests por minuto
+}
+
+# ============================================
+# CONFIGURAÇÃO DE DIRETÓRIOS
+# ============================================
+
 CACHE_DIR = '/var/www/radar-nowcast/cache'
 MENDANHA_DIR = os.path.join(CACHE_DIR, 'mendanha')
 SUMARE_DIR = os.path.join(CACHE_DIR, 'sumare')
 EXPORT_DIR = os.path.join(CACHE_DIR, 'exports')
 
-# Criar diretórios
 os.makedirs(MENDANHA_DIR, exist_ok=True)
 os.makedirs(SUMARE_DIR, exist_ok=True)
 os.makedirs(EXPORT_DIR, exist_ok=True)
 
-# FTP Mendanha
+# ============================================
+# CREDENCIAIS VIA VARIÁVEIS DE AMBIENTE
+# ============================================
+
 FTP_CONFIG = {
-    'host': '82.180.153.43',
-    'user': 'u109222483.CorInea',
-    'password': 'Inea$123Qwe!!',
+    'host': os.environ.get('FTP_HOST', '82.180.153.43'),
+    'user': os.environ.get('FTP_USER', 'u109222483.CorInea'),
+    'password': os.environ.get('FTP_PASSWORD', ''),  # OBRIGATÓRIO definir via ambiente
     'path': '/',
     'pattern': r'MDN-.*\.png$'
 }
 
-last_sync = {'mendanha': None, 'sumare': None}
+# Verificar se a senha foi configurada
+if not FTP_CONFIG['password']:
+    print("⚠️  AVISO: FTP_PASSWORD não configurada. Defina a variável de ambiente.")
 
-# Limite de horas para manter imagens
+last_sync = {'mendanha': None, 'sumare': None}
 MAX_HOURS = 24
+
+# ============================================
+# FUNÇÕES DE SEGURANÇA
+# ============================================
+
+def sanitize_filename(filename):
+    """
+    Valida e sanitiza o nome do arquivo para prevenir Path Traversal.
+    Retorna None se o arquivo for inválido.
+    """
+    if not filename:
+        return None
+    
+    # Remover qualquer path - pegar apenas o nome do arquivo
+    filename = os.path.basename(filename)
+    
+    # Verificar caracteres permitidos (apenas letras, números, hífen, underscore, ponto)
+    if not re.match(r'^[a-zA-Z0-9_\-\.]+$', filename):
+        return None
+    
+    # Deve terminar com .png
+    if not filename.lower().endswith('.png'):
+        return None
+    
+    # Não permitir .. ou sequências suspeitas
+    if '..' in filename or filename.startswith('.'):
+        return None
+    
+    return filename
+
+def rate_limit(limit_type='default'):
+    """Decorator para rate limiting"""
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            client_ip = request.remote_addr
+            key = f"{client_ip}:{limit_type}"
+            now = time.time()
+            
+            # Limpar entradas antigas
+            if key in rate_limit_store:
+                rate_limit_store[key] = [t for t in rate_limit_store[key] if now - t < RATE_LIMIT_WINDOW]
+            else:
+                rate_limit_store[key] = []
+            
+            # Verificar limite
+            max_requests = RATE_LIMIT_MAX_REQUESTS.get(limit_type, RATE_LIMIT_MAX_REQUESTS['default'])
+            if len(rate_limit_store[key]) >= max_requests:
+                return jsonify({
+                    'error': 'Rate limit exceeded. Tente novamente em alguns segundos.',
+                    'retry_after': RATE_LIMIT_WINDOW
+                }), 429
+            
+            # Registrar requisição
+            rate_limit_store[key].append(now)
+            
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
+def require_admin_token(f):
+    """Decorator para proteger endpoints administrativos"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # Verificar token no header ou query param
+        token = request.headers.get('X-Admin-Token') or request.args.get('token')
+        
+        if not token or token != ADMIN_TOKEN:
+            return jsonify({'error': 'Acesso não autorizado'}), 401
+        
+        return f(*args, **kwargs)
+    return decorated_function
+
+# ============================================
+# FUNÇÕES DE SINCRONIZAÇÃO
+# ============================================
 
 def clean_old_files(directory, max_hours=24):
     """Remove arquivos com mais de X horas"""
@@ -56,32 +166,37 @@ def clean_old_files(directory, max_hours=24):
 def sync_mendanha():
     """Sincroniza imagens do radar Mendanha via FTP"""
     global last_sync
+    
+    if not FTP_CONFIG['password']:
+        print("Erro: FTP_PASSWORD não configurada")
+        return
+    
     try:
-        # Limpar arquivos antigos (mais de 24h)
         clean_old_files(MENDANHA_DIR, MAX_HOURS)
         
-        ftp = ftplib.FTP(FTP_CONFIG['host'])
+        ftp = ftplib.FTP(FTP_CONFIG['host'], timeout=30)
         ftp.login(FTP_CONFIG['user'], FTP_CONFIG['password'])
         ftp.cwd(FTP_CONFIG['path'])
         
         files = ftp.nlst()
         radar_files = [f for f in files if re.match(FTP_CONFIG['pattern'], f)]
         radar_files.sort(reverse=True)
-        radar_files = radar_files[:20]  # Limitar a 20 frames
+        radar_files = radar_files[:20]
         
         existing = set(os.listdir(MENDANHA_DIR))
         
         for filename in radar_files:
-            if filename not in existing:
-                local_path = os.path.join(MENDANHA_DIR, filename)
+            # Validar nome do arquivo do FTP também
+            safe_filename = sanitize_filename(filename)
+            if safe_filename and safe_filename not in existing:
+                local_path = os.path.join(MENDANHA_DIR, safe_filename)
                 with open(local_path, 'wb') as f:
                     ftp.retrbinary(f'RETR {filename}', f.write)
-                print(f'Downloaded: {filename}')
+                print(f'Downloaded: {safe_filename}')
         
         ftp.quit()
         last_sync['mendanha'] = datetime.now().isoformat()
         
-        # Contar arquivos restantes
         remaining = len([f for f in os.listdir(MENDANHA_DIR) if f.endswith('.png')])
         print(f'Mendanha sync completed: {remaining} files')
     except Exception as e:
@@ -116,89 +231,112 @@ def sync_loop():
     while True:
         sync_mendanha()
         sync_sumare()
-        
-        # Limpar exports antigos (mais de 1 hora)
         clean_old_files(EXPORT_DIR, 1)
-        
-        time.sleep(120)  # 2 minutos
+        time.sleep(120)
 
-# Iniciar thread de sincronização
 sync_thread = threading.Thread(target=sync_loop, daemon=True)
 sync_thread.start()
 
+# ============================================
+# ENDPOINTS PÚBLICOS (com rate limiting)
+# ============================================
+
 @app.route('/api/frames/mendanha')
+@rate_limit('default')
 def get_mendanha_frames():
     """Lista frames do Mendanha"""
     try:
         files = os.listdir(MENDANHA_DIR)
-        files = [f for f in files if f.endswith('.png')]
+        files = [f for f in files if f.endswith('.png') and sanitize_filename(f)]
         files.sort(reverse=True)
-        files = files[:20]  # Limitar a 20 frames
+        files = files[:20]
         return jsonify({'frames': files, 'count': len(files)})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Erro interno'}), 500
 
 @app.route('/api/frame/mendanha/<filename>')
+@rate_limit('default')
 def get_mendanha_frame(filename):
     """Serve uma imagem do Mendanha"""
-    filepath = os.path.join(MENDANHA_DIR, filename)
+    # CORREÇÃO: Validar filename contra Path Traversal
+    safe_filename = sanitize_filename(filename)
+    if not safe_filename:
+        return jsonify({'error': 'Nome de arquivo inválido'}), 400
+    
+    filepath = os.path.join(MENDANHA_DIR, safe_filename)
+    
+    # Verificação adicional: garantir que está dentro do diretório esperado
+    real_path = os.path.realpath(filepath)
+    if not real_path.startswith(os.path.realpath(MENDANHA_DIR)):
+        return jsonify({'error': 'Acesso negado'}), 403
+    
     if os.path.exists(filepath):
         response = send_file(filepath, mimetype='image/png')
-        response.headers['Access-Control-Allow-Origin'] = '*'
         return response
-    return jsonify({'error': 'File not found'}), 404
+    return jsonify({'error': 'Arquivo não encontrado'}), 404
 
 @app.route('/api/frames/sumare')
+@rate_limit('default')
 def get_sumare_frames():
     """Lista frames do Sumaré"""
     try:
         files = os.listdir(SUMARE_DIR)
-        files = [f for f in files if f.endswith('.png')]
+        files = [f for f in files if f.endswith('.png') and sanitize_filename(f)]
         files.sort()
         return jsonify({'frames': files, 'count': len(files)})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Erro interno'}), 500
 
 @app.route('/api/frame/sumare/<filename>')
+@rate_limit('default')
 def get_sumare_frame(filename):
     """Serve uma imagem do Sumaré"""
-    filepath = os.path.join(SUMARE_DIR, filename)
+    # CORREÇÃO: Validar filename contra Path Traversal
+    safe_filename = sanitize_filename(filename)
+    if not safe_filename:
+        return jsonify({'error': 'Nome de arquivo inválido'}), 400
+    
+    filepath = os.path.join(SUMARE_DIR, safe_filename)
+    
+    # Verificação adicional
+    real_path = os.path.realpath(filepath)
+    if not real_path.startswith(os.path.realpath(SUMARE_DIR)):
+        return jsonify({'error': 'Acesso negado'}), 403
+    
     if os.path.exists(filepath):
         response = send_file(filepath, mimetype='image/png')
         response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-        response.headers['Access-Control-Allow-Origin'] = '*'
         return response
-    return jsonify({'error': 'File not found'}), 404
+    return jsonify({'error': 'Arquivo não encontrado'}), 404
 
 @app.route('/api/export/gif/<radar>')
+@rate_limit('gif')  # Rate limit específico para GIF (mais restrito)
 def export_gif(radar):
     """Gera GIF animado do radar"""
     try:
         from PIL import Image
         
-        if radar == 'mendanha':
-            directory = MENDANHA_DIR
-        elif radar == 'sumare':
-            directory = SUMARE_DIR
-        else:
+        # Validar radar
+        if radar not in ['mendanha', 'sumare']:
             return jsonify({'error': 'Radar inválido'}), 400
         
-        # Listar arquivos
-        files = [f for f in os.listdir(directory) if f.endswith('.png')]
+        directory = MENDANHA_DIR if radar == 'mendanha' else SUMARE_DIR
+        
+        files = [f for f in os.listdir(directory) if f.endswith('.png') and sanitize_filename(f)]
         files.sort()
         
         if len(files) == 0:
             return jsonify({'error': 'Nenhum frame disponível'}), 404
         
-        # Carregar imagens
+        # Limitar número de frames no GIF para evitar DoS
+        files = files[:20]
+        
         images = []
         for filename in files:
             filepath = os.path.join(directory, filename)
             try:
                 img = Image.open(filepath)
-                # Converter para RGB se necessário (GIF não suporta RGBA bem)
                 if img.mode == 'RGBA':
-                    # Criar fundo preto
                     background = Image.new('RGB', img.size, (0, 0, 0))
                     background.paste(img, mask=img.split()[3])
                     images.append(background)
@@ -210,19 +348,17 @@ def export_gif(radar):
         if len(images) == 0:
             return jsonify({'error': 'Erro ao carregar imagens'}), 500
         
-        # Gerar GIF
         output = BytesIO()
         images[0].save(
             output,
             format='GIF',
             save_all=True,
             append_images=images[1:],
-            duration=500,  # 500ms por frame
+            duration=500,
             loop=0
         )
         output.seek(0)
         
-        # Nome do arquivo
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f'radar_{radar}_{timestamp}.gif'
         
@@ -234,17 +370,56 @@ def export_gif(radar):
         )
         
     except ImportError:
-        return jsonify({'error': 'Pillow não instalado. Execute: pip install Pillow'}), 500
+        return jsonify({'error': 'Pillow não instalado'}), 500
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Erro ao gerar GIF'}), 500
 
 @app.route('/api/status')
+@rate_limit('default')
 def get_status():
-    """Status da sincronização"""
+    """Status da sincronização (informações limitadas)"""
     mendanha_count = len([f for f in os.listdir(MENDANHA_DIR) if f.endswith('.png')]) if os.path.exists(MENDANHA_DIR) else 0
     sumare_count = len([f for f in os.listdir(SUMARE_DIR) if f.endswith('.png')]) if os.path.exists(SUMARE_DIR) else 0
     
-    # Calcular espaço usado
+    return jsonify({
+        'mendanha': {
+            'files_count': mendanha_count,
+            'last_sync': last_sync['mendanha']
+        },
+        'sumare': {
+            'files_count': sumare_count,
+            'last_sync': last_sync['sumare']
+        },
+        'status': 'ok'
+    })
+
+# ============================================
+# ENDPOINTS ADMINISTRATIVOS (protegidos)
+# ============================================
+
+@app.route('/api/sync/mendanha')
+@require_admin_token
+@rate_limit('sync')
+def manual_sync_mendanha():
+    """Sincronização manual do Mendanha - REQUER TOKEN"""
+    sync_mendanha()
+    return jsonify({'message': 'Sync completed', 'last_sync': last_sync['mendanha']})
+
+@app.route('/api/sync/sumare')
+@require_admin_token
+@rate_limit('sync')
+def manual_sync_sumare():
+    """Sincronização manual do Sumaré - REQUER TOKEN"""
+    sync_sumare()
+    return jsonify({'message': 'Sync completed', 'last_sync': last_sync['sumare']})
+
+@app.route('/api/admin/status')
+@require_admin_token
+def admin_status():
+    """Status detalhado para administradores"""
+    mendanha_count = len([f for f in os.listdir(MENDANHA_DIR) if f.endswith('.png')]) if os.path.exists(MENDANHA_DIR) else 0
+    sumare_count = len([f for f in os.listdir(SUMARE_DIR) if f.endswith('.png')]) if os.path.exists(SUMARE_DIR) else 0
+    
     mendanha_size = sum(os.path.getsize(os.path.join(MENDANHA_DIR, f)) for f in os.listdir(MENDANHA_DIR) if f.endswith('.png')) if os.path.exists(MENDANHA_DIR) else 0
     sumare_size = sum(os.path.getsize(os.path.join(SUMARE_DIR, f)) for f in os.listdir(SUMARE_DIR) if f.endswith('.png')) if os.path.exists(SUMARE_DIR) else 0
     
@@ -260,20 +435,26 @@ def get_status():
             'size_mb': round(sumare_size / 1024 / 1024, 2)
         },
         'max_hours': MAX_HOURS,
+        'ftp_configured': bool(FTP_CONFIG['password']),
         'status': 'ok'
     })
 
-@app.route('/api/sync/mendanha')
-def manual_sync_mendanha():
-    """Sincronização manual do Mendanha"""
-    sync_mendanha()
-    return jsonify({'message': 'Sync completed', 'last_sync': last_sync['mendanha']})
+# ============================================
+# TRATAMENTO DE ERROS
+# ============================================
 
-@app.route('/api/sync/sumare')
-def manual_sync_sumare():
-    """Sincronização manual do Sumaré"""
-    sync_sumare()
-    return jsonify({'message': 'Sync completed', 'last_sync': last_sync['sumare']})
+@app.errorhandler(404)
+def not_found(e):
+    return jsonify({'error': 'Endpoint não encontrado'}), 404
+
+@app.errorhandler(500)
+def internal_error(e):
+    return jsonify({'error': 'Erro interno do servidor'}), 500
+
+# ============================================
+# INICIALIZAÇÃO
+# ============================================
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # CORREÇÃO: Desabilitar debug em produção
+    app.run(host='0.0.0.0', port=5000, debug=False)
