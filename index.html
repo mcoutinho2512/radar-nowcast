@@ -113,6 +113,7 @@
             <div class="card" id="radarInfoCard">
                 <div class="card-title" id="radarTitle">Radar Mendanha</div>
                 <div id="mendanhaInfo">
+                    <div class="info-row"><span class="info-label">Fonte</span><span class="info-value">INEA</span></div>
                     <div class="info-row"><span class="info-label">Frames</span><span class="info-value" id="frameCount">0</span></div>
                     <div class="info-row"><span class="info-label">Atual</span><span class="info-value" id="currentFrameNum">0</span></div>
                     <div class="info-row"><span class="info-label">Núcleos</span><span class="info-value" id="nucleiCount">0</span></div>
@@ -121,6 +122,7 @@
                     <div class="info-row"><span class="info-label">Fonte</span><span class="info-value">AlertaRio</span></div>
                     <div class="info-row"><span class="info-label">Frames</span><span class="info-value">20</span></div>
                     <div class="info-row"><span class="info-label">Atual</span><span class="info-value" id="sumareFrameNum">0/20</span></div>
+                    <div class="info-row"><span class="info-label">Núcleos</span><span class="info-value" id="sumareNucleiCount">0</span></div>
                 </div>
                 <div id="dcnitInfo" style="display:none;">
                     <p class="external-info">
@@ -198,6 +200,7 @@
         let frames = [], currentFrame = 0, isPlaying = false, playInterval;
         let currentOpacity = 0.7, showArrows = true;
         let allFramesData = [];
+        let sumareFramesData = [];
         let currentRadar = 'mendanha';
         let sumareFrames = [];
 
@@ -241,7 +244,6 @@
                 arrowsLayer.clearLayers();
                 
                 if (currentRadar === 'dcnit') {
-                    // Mostrar iframe DCNIT
                     document.getElementById('map').style.display = 'none';
                     document.getElementById('externalRadar').style.display = 'block';
                     document.getElementById('externalRadar').src = 'https://svidaniteroi.com.br/radar/';
@@ -255,18 +257,17 @@
                     document.getElementById('configCard').style.display = 'none';
                     document.getElementById('nucleiCard').style.display = 'none';
                 } else {
-                    // Mostrar mapa (Mendanha ou Sumaré)
                     document.getElementById('map').style.display = 'block';
                     document.getElementById('externalRadar').style.display = 'none';
                     document.getElementById('externalRadar').src = '';
                     document.getElementById('controls').style.display = 'flex';
                     document.getElementById('mapCard').style.display = 'block';
                     document.getElementById('configCard').style.display = 'block';
+                    document.getElementById('nucleiCard').style.display = 'block';
                     
                     const config = RADAR_CONFIG[currentRadar];
                     map.setView(config.center, config.zoom);
                     
-                    // Atualizar marcador
                     radarMarker.setLatLng(config.markerPos);
                     radarMarker.setPopupContent(config.markerName);
                     
@@ -275,18 +276,12 @@
                         document.getElementById('mendanhaInfo').style.display = 'block';
                         document.getElementById('sumareInfo').style.display = 'none';
                         document.getElementById('dcnitInfo').style.display = 'none';
-                        document.getElementById('nucleiCard').style.display = 'block';
-                        document.getElementById('arrowsToggleRow').style.display = 'flex';
-                        
                         loadMendanhaFrames();
                     } else if (currentRadar === 'sumare') {
                         document.getElementById('radarTitle').textContent = 'Radar Sumaré';
                         document.getElementById('mendanhaInfo').style.display = 'none';
                         document.getElementById('sumareInfo').style.display = 'block';
                         document.getElementById('dcnitInfo').style.display = 'none';
-                        document.getElementById('nucleiCard').style.display = 'none';
-                        document.getElementById('arrowsToggleRow').style.display = 'none';
-                        
                         loadSumareFrames();
                     }
                     
@@ -313,7 +308,12 @@
         document.getElementById('toggleArrows').onclick = function() {
             this.classList.toggle('active');
             showArrows = this.classList.contains('active');
-            showArrows ? drawArrowsForFrame(currentFrame) : arrowsLayer.clearLayers();
+            if (showArrows) {
+                if (currentRadar === 'mendanha') drawArrowsForFrame(currentFrame, allFramesData, RADAR_CONFIG.mendanha.bounds);
+                else if (currentRadar === 'sumare') drawArrowsForFrame(currentFrame, sumareFramesData, RADAR_CONFIG.sumare.bounds);
+            } else {
+                arrowsLayer.clearLayers();
+            }
         };
 
         document.getElementById('toggleOpacity').onclick = function() {
@@ -390,16 +390,13 @@
             return directions[idx];
         }
 
-        async function analyzeAllFrames() {
-            if (frames.length < 2 || currentRadar !== 'mendanha') return;
-            
+        // Análise genérica de frames
+        async function analyzeFrames(framesList, getFrameUrl, targetArray, progressCallback) {
             const canvas = document.getElementById('analysisCanvas');
             const ctx = canvas.getContext('2d');
-            allFramesData = [];
-            
-            document.getElementById('nucleusList').innerHTML = '<div class="loading">Analisando frames... 0/' + frames.length + '</div>';
+            targetArray.length = 0;
 
-            for (let i = 0; i < frames.length; i++) {
+            for (let i = 0; i < framesList.length; i++) {
                 const img = new Image();
                 img.crossOrigin = 'anonymous';
                 
@@ -411,29 +408,29 @@
                         try {
                             const imageData = ctx.getImageData(0, 0, img.width, img.height);
                             const nuclei = detectNuclei(imageData, img.width, img.height);
-                            allFramesData.push({ frame: i, nuclei, width: img.width, height: img.height });
+                            targetArray.push({ frame: i, nuclei, width: img.width, height: img.height });
                         } catch(e) { 
-                            allFramesData.push({ frame: i, nuclei: [], width: 1024, height: 1024 });
+                            targetArray.push({ frame: i, nuclei: [], width: 1024, height: 1024 });
                         }
-                        document.getElementById('nucleusList').innerHTML = '<div class="loading">Analisando frames... ' + (i+1) + '/' + frames.length + '</div>';
+                        if (progressCallback) progressCallback(i + 1, framesList.length);
                         resolve();
                     };
                     img.onerror = () => {
-                        allFramesData.push({ frame: i, nuclei: [], width: 1024, height: 1024 });
+                        targetArray.push({ frame: i, nuclei: [], width: 1024, height: 1024 });
+                        if (progressCallback) progressCallback(i + 1, framesList.length);
                         resolve();
                     };
-                    img.src = '/api/frame/mendanha/' + frames[i];
+                    img.src = getFrameUrl(framesList[i], i);
                 });
             }
             
-            calculateMovements();
-            drawArrowsForFrame(currentFrame);
+            calculateMovementsForArray(targetArray);
         }
 
-        function calculateMovements() {
-            for (let i = 0; i < allFramesData.length - 1; i++) {
-                const current = allFramesData[i];
-                const next = allFramesData[i + 1];
+        function calculateMovementsForArray(framesData) {
+            for (let i = 0; i < framesData.length - 1; i++) {
+                const current = framesData[i];
+                const next = framesData[i + 1];
                 
                 current.movements = [];
                 
@@ -468,19 +465,24 @@
             }
         }
 
-        function drawArrowsForFrame(frameIndex) {
+        function drawArrowsForFrame(frameIndex, framesData, bounds) {
             arrowsLayer.clearLayers();
-            if (!showArrows || allFramesData.length === 0 || currentRadar !== 'mendanha') return;
+            if (!showArrows || framesData.length === 0) return;
             
-            const frameData = allFramesData[frameIndex];
+            const frameData = framesData[frameIndex];
             if (!frameData || !frameData.movements) return;
             
             const movements = frameData.movements;
             const intensityColors = ['#00ff00', '#008800', '#ffff00', '#ff9900', '#ff0000', '#ff00ff'];
             const intensityNames = ['Fraco', 'Leve', 'Moderado', 'Forte', 'Muito Forte', 'Extremo'];
-            const bounds = RADAR_CONFIG.mendanha.bounds;
             
-            document.getElementById('nucleiCount').textContent = movements.length;
+            // Atualizar contador de núcleos
+            if (currentRadar === 'mendanha') {
+                document.getElementById('nucleiCount').textContent = movements.length;
+            } else if (currentRadar === 'sumare') {
+                document.getElementById('sumareNucleiCount').textContent = movements.length;
+            }
+            
             const listEl = document.getElementById('nucleusList');
             listEl.innerHTML = '';
 
@@ -517,26 +519,48 @@
             try {
                 const res = await fetch('/api/frames/mendanha');
                 const data = await res.json();
-                const newFrames = data.frames || [];
+                frames = data.frames || [];
+                document.getElementById('frameCount').textContent = frames.length;
+                currentFrame = 0;
                 
-                if (JSON.stringify(newFrames) !== JSON.stringify(frames) || currentRadar === 'mendanha') {
-                    frames = newFrames;
-                    document.getElementById('frameCount').textContent = frames.length;
-                    currentFrame = 0;
-                    if (frames.length > 0) {
-                        showMendanhaFrame(0);
-                        analyzeAllFrames();
-                        startPlayback();
-                    }
+                if (frames.length > 0) {
+                    showMendanhaFrame(0);
+                    
+                    document.getElementById('nucleusList').innerHTML = '<div class="loading">Analisando frames... 0/' + frames.length + '</div>';
+                    
+                    await analyzeFrames(
+                        frames,
+                        (frame) => '/api/frame/mendanha/' + frame,
+                        allFramesData,
+                        (current, total) => {
+                            document.getElementById('nucleusList').innerHTML = '<div class="loading">Analisando frames... ' + current + '/' + total + '</div>';
+                        }
+                    );
+                    
+                    drawArrowsForFrame(currentFrame, allFramesData, RADAR_CONFIG.mendanha.bounds);
+                    startPlayback();
                 }
             } catch (e) { console.error('Erro:', e); }
         }
 
         // Carregar frames do Sumaré
-        function loadSumareFrames() {
+        async function loadSumareFrames() {
             frames = sumareFrames;
             currentFrame = 0;
             showSumareFrame(0);
+            
+            document.getElementById('nucleusList').innerHTML = '<div class="loading">Analisando frames... 0/20</div>';
+            
+            await analyzeFrames(
+                sumareFrames,
+                (frame) => frame + '?t=' + Date.now(),
+                sumareFramesData,
+                (current, total) => {
+                    document.getElementById('nucleusList').innerHTML = '<div class="loading">Analisando frames... ' + current + '/' + total + '</div>';
+                }
+            );
+            
+            drawArrowsForFrame(currentFrame, sumareFramesData, RADAR_CONFIG.sumare.bounds);
             startPlayback();
         }
 
@@ -559,13 +583,13 @@
                 document.getElementById('timeDisplay').textContent = timeStr;
             }
             
-            drawArrowsForFrame(index);
+            drawArrowsForFrame(index, allFramesData, bounds);
         }
 
         function showSumareFrame(index) {
             if (sumareFrames.length === 0) return;
             currentFrame = index;
-            const url = sumareFrames[index] + '?t=' + Date.now(); // Cache bust
+            const url = sumareFrames[index] + '?t=' + Date.now();
             const bounds = RADAR_CONFIG.sumare.bounds;
             
             if (imageOverlay) map.removeLayer(imageOverlay);
@@ -575,10 +599,11 @@
             document.getElementById('frameCounter').textContent = (index + 1) + '/20';
             document.getElementById('timelineBar').style.width = ((index + 1) / 20 * 100) + '%';
             
-            // Data/hora atual para Sumaré (atualização em tempo real)
             const now = new Date();
             const timeStr = now.toLocaleDateString('pt-BR') + ', ' + now.toLocaleTimeString('pt-BR');
             document.getElementById('timeDisplay').textContent = timeStr;
+            
+            drawArrowsForFrame(index, sumareFramesData, bounds);
         }
 
         function showFrame(index) {
